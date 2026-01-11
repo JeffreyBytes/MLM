@@ -32,7 +32,6 @@ use audiobookshelf::match_torrents_to_abs;
 use autograbber::{grab_selected_torrents, run_autograbber};
 use cleaner::run_library_cleaner;
 use dirs::{config_dir, data_local_dir};
-use exporter::export_db;
 use figment::{
     Figment,
     providers::{Env, Format, Toml},

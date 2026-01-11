@@ -254,26 +254,17 @@ pub trait HidableColumns: Sortable {
 
 pub trait Size {
     fn style(&self) -> String;
-    fn px(&self) -> u64;
 }
 impl Size for u64 {
     fn style(&self) -> String {
         format!("{self}px")
-    }
-
-    fn px(&self) -> u64 {
-        *self
     }
 }
 
 pub struct Flex(pub u64, pub u64);
 impl Size for Flex {
     fn style(&self) -> String {
-        format!("{}fr", self.0)
-    }
-
-    fn px(&self) -> u64 {
-        self.1
+        format!("minmax({}px, {}fr)", self.1, self.0)
     }
 }
 

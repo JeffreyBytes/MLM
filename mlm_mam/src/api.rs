@@ -88,7 +88,7 @@ impl<'a> MaM<'a> {
         }
         let has_stored_mam_id = stored_mam_id.is_some();
         let cookie = Cookie::build(("mam_id", stored_mam_id.unwrap_or(mam_id.to_owned())))
-            .expires(OffsetDateTime::now_local()? + Duration::from_mins(10))
+            .expires(OffsetDateTime::now_local()? + Duration::from_secs(10 * 60))
             .build();
         jar.write()
             .unwrap()
@@ -111,7 +111,7 @@ impl<'a> MaM<'a> {
             if has_stored_mam_id {
                 warn!("Stored mam_id failed with {err}, falling back to config value");
                 let cookie = Cookie::build(("mam_id", mam_id.to_owned()))
-                    .expires(OffsetDateTime::now_local()? + Duration::from_mins(10))
+                    .expires(OffsetDateTime::now_local()? + Duration::from_secs(10 * 60))
                     .build();
                 mam.jar
                     .write()
