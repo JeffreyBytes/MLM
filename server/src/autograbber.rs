@@ -12,8 +12,8 @@ use itertools::Itertools as _;
 use lava_torrent::torrent::v1::Torrent;
 use mlm_db::{
     ClientStatus, DatabaseExt as _, DuplicateTorrent, ErroredTorrentId, Event, EventType,
-    MetadataSource, SelectedTorrent, Size, Timestamp, TorrentCost, TorrentKey, TorrentMeta,
-    VipStatus,
+    LibraryItem, LibraryItemKey, MetadataSource, SelectedTorrent, Size, Timestamp, TorrentCost,
+    TorrentKey, TorrentMeta, VipStatus,
 };
 use mlm_mam::{
     api::{MaM, RateLimitError, WedgeBuyError},
@@ -36,6 +36,7 @@ use uuid::Uuid;
 use crate::{
     audiobookshelf::{self as abs, Abs},
     config::{Config, Cost, SortBy, TorrentFilter, TorrentSearch, Type},
+    linker::library_item_meta,
     logging::{TorrentMetaError, update_errored_torrent, write_event},
 };
 
@@ -954,6 +955,7 @@ pub async fn update_torrent_meta(
     rw.commit()?;
     drop(guard);
 
+    let mut item_updates: Vec<LibraryItem> = vec![];
     if let Some(library_path) = &torrent.library_path
         && let serde_json::Value::Object(new) = abs::create_metadata(mam_torrent, &meta)
     {
@@ -976,6 +978,59 @@ pub async fn update_torrent_meta(
             match abs.update_book(abs_id, mam_torrent, &meta).await {
                 Ok(_) => debug!("updated ABS via API {}", torrent.meta.mam_id),
                 Err(err) => warn!("Failed updating book {} in abs: {err}", torrent.meta.mam_id),
+            }
+        }
+    }
+    {
+        let r = db.r_transaction()?;
+        let items = r
+            .scan()
+            .secondary::<LibraryItem>(LibraryItemKey::torrent_id)?
+            .range(id.as_str()..=id.as_str())?;
+        for item in items {
+            let Ok(item) = item else {
+                continue;
+            };
+            let Some(library_path) = &item.library_path else {
+                continue;
+            };
+            let item_meta = library_item_meta(
+                &meta,
+                item.item_title.clone(),
+                item.series_entry.clone(),
+            );
+            if let serde_json::Value::Object(new) = abs::create_metadata(mam_torrent, &item_meta) {
+                let metadata_path = library_path.join("metadata.json");
+                if metadata_path.exists() {
+                    let existing = fs::read_to_string(&metadata_path).await?;
+                    let mut existing: serde_json::Map<String, serde_json::Value> =
+                        serde_json::from_str(&existing)?;
+                    for (key, value) in new {
+                        existing.insert(key, value);
+                    }
+                    let file = File::create(&metadata_path)?;
+                    let mut writer = BufWriter::new(file);
+                    serde_json::to_writer(&mut writer, &serde_json::Value::Object(existing))?;
+                    writer.flush()?;
+                    debug!("updated ABS metadata file item {}", item.id);
+                }
+            }
+            item_updates.push(item);
+        }
+    }
+    if let Some(abs_config) = &config.audiobookshelf {
+        let abs = Abs::new(abs_config)?;
+        for item in &item_updates {
+            let Some(abs_id) = &item.abs_id else {
+                continue;
+            };
+            let item_meta = library_item_meta(
+                &meta,
+                item.item_title.clone(),
+                item.series_entry.clone(),
+            );
+            if let Err(err) = abs.update_book(abs_id, mam_torrent, &item_meta).await {
+                warn!("Failed updating book {} in abs: {err}", item.id);
             }
         }
     }

@@ -10,8 +10,8 @@ use axum::{
 use axum_extra::extract::Form;
 use itertools::Itertools;
 use mlm_db::{
-    ClientStatus, DatabaseExt as _, Event, EventKey, EventType, Size, Torrent, TorrentCost,
-    TorrentKey, TorrentMeta,
+    ClientStatus, DatabaseExt as _, Event, EventKey, EventType, LibraryItem, LibraryItemKey, Size,
+    Torrent, TorrentCost, TorrentKey, TorrentMeta,
 };
 use mlm_mam::{
     api::MaM,
@@ -166,6 +166,15 @@ async fn torrent_page_id(
         Some(abs) => abs?.get_book(&torrent).await?,
         None => None,
     };
+    let mut library_items: Vec<LibraryItem> = {
+        let r = context.db.r_transaction()?;
+        r.scan()
+            .secondary::<LibraryItem>(LibraryItemKey::torrent_id)?
+            .range(id.as_str()..=id.as_str())?
+            .filter_map(|i| i.ok())
+            .collect()
+    };
+    library_items.sort_by(|a, b| a.item_index.cmp(&b.item_index));
 
     let events = context
         .db
@@ -201,13 +210,15 @@ async fn torrent_page_id(
         categories.sort_by(|a, b| a.name.cmp(&b.name));
         let tags = qbit.tags().await?;
 
-        wanted_path = find_library(&config, &qbit_torrent).and_then(|library| {
-            library_dir(
-                config.exclude_narrator_in_library_dir,
-                library,
-                &torrent.meta,
-            )
-        });
+        if library_items.is_empty() {
+            wanted_path = find_library(&config, &qbit_torrent).and_then(|library| {
+                library_dir(
+                    config.exclude_narrator_in_library_dir,
+                    library,
+                    &torrent.meta,
+                )
+            });
+        }
 
         qbit_data = Some(QbitData {
             torrent_tags: qbit_torrent.tags.split(", ").map(str::to_string).collect(),
@@ -256,6 +267,7 @@ async fn torrent_page_id(
         wanted_path,
         qbit_files,
         other_torrents,
+        library_items,
     };
     Ok::<_, AppError>(Html(template.to_string()))
 }
@@ -445,6 +457,7 @@ struct TorrentPageTemplate {
     wanted_path: Option<PathBuf>,
     qbit_files: Vec<qbit::models::TorrentContent>,
     other_torrents: MaMTorrentsTemplate,
+    library_items: Vec<LibraryItem>,
 }
 
 impl TorrentPageTemplate {

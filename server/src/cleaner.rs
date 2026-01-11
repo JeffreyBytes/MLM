@@ -2,7 +2,8 @@ use std::{fs, io::ErrorKind, mem, ops::Deref, sync::Arc};
 
 use anyhow::Result;
 use mlm_db::{
-    self, DatabaseExt as _, ErroredTorrentId, Event, EventType, Timestamp, Torrent, TorrentKey,
+    self, DatabaseExt as _, ErroredTorrentId, Event, EventType, LibraryItem, LibraryItemKey,
+    Timestamp, Torrent, TorrentKey,
 };
 use native_db::Database;
 use tracing::{debug, info, instrument, trace, warn};
@@ -143,7 +144,7 @@ pub async fn clean_torrent(
         }
     }
 
-    remove_library_files(config, &remove, delete_in_abs).await?;
+    remove_library_files(config, db, &remove, delete_in_abs).await?;
 
     let id = remove.id.clone();
     let mam_id = remove.meta.mam_id;
@@ -155,6 +156,19 @@ pub async fn clean_torrent(
     {
         let (_guard, rw) = db.rw_async().await?;
         rw.upsert(remove)?;
+        rw.commit()?;
+    }
+    {
+        let (_guard, rw) = db.rw_async().await?;
+        let existing_items = rw
+            .scan()
+            .secondary::<LibraryItem>(LibraryItemKey::torrent_id)?
+            .range(id.as_str()..=id.as_str())?;
+        for item in existing_items {
+            if let Ok(item) = item {
+                rw.remove(item)?;
+            }
+        }
         rw.commit()?;
     }
 
@@ -179,15 +193,34 @@ pub async fn clean_torrent(
 #[instrument(skip_all)]
 pub async fn remove_library_files(
     config: &Config,
+    db: &Database<'_>,
     remove: &Torrent,
     delete_in_abs: bool,
 ) -> Result<()> {
-    if delete_in_abs
-        && let (Some(abs_id), Some(abs_config)) = (&remove.abs_id, &config.audiobookshelf)
-    {
-        let abs = Abs::new(abs_config)?;
-        if let Err(err) = abs.delete_book(abs_id).await {
-            warn!("Failed deleting book from abs: {err}");
+    if delete_in_abs {
+        if let (Some(abs_id), Some(abs_config)) = (&remove.abs_id, &config.audiobookshelf) {
+            let abs = Abs::new(abs_config)?;
+            if let Err(err) = abs.delete_book(abs_id).await {
+                warn!("Failed deleting book from abs: {err}");
+            }
+        }
+        let r = db.r_transaction()?;
+        let items = r
+            .scan()
+            .secondary::<LibraryItem>(LibraryItemKey::torrent_id)?
+            .range(remove.id.as_str()..=remove.id.as_str())?;
+        if let Some(abs_config) = &config.audiobookshelf {
+            let abs = Abs::new(abs_config)?;
+            for item in items {
+                if let Ok(item) = item
+                    && let Some(abs_id) = &item.abs_id
+                    && remove.abs_id.as_ref() != Some(abs_id)
+                {
+                    if let Err(err) = abs.delete_book(abs_id).await {
+                        warn!("Failed deleting book from abs: {err}");
+                    }
+                }
+            }
         }
     }
 
@@ -229,6 +262,59 @@ pub async fn remove_library_files(
         }
         fs::remove_dir(library_path).ok();
         trace!("files removed");
+    }
+
+    let r = db.r_transaction()?;
+    let items = r
+        .scan()
+        .secondary::<LibraryItem>(LibraryItemKey::torrent_id)?
+        .range(remove.id.as_str()..=remove.id.as_str())?;
+    for item in items {
+        let Ok(item) = item else {
+            continue;
+        };
+        let Some(library_path) = &item.library_path else {
+            continue;
+        };
+        debug!(
+            "Removing library files for torrent {} item {}",
+            remove.meta.mam_id, item.item_index
+        );
+        for file in item.library_files.iter() {
+            let path = library_path.join(file);
+            fs::remove_file(path).or_else(|err| {
+                if err.kind() == ErrorKind::NotFound {
+                    trace!("file already missing");
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            })?;
+            if let Some(sub_dir) = file.parent() {
+                fs::remove_dir(sub_dir).ok();
+            }
+        }
+        let mut remove_files = true;
+        let mut files_to_remove = vec![];
+        if let Ok(files) = fs::read_dir(library_path) {
+            for file in files {
+                if let Ok(file) = file {
+                    if file.file_name() == "cover.jpg" || file.file_name() == "metadata.json" {
+                        files_to_remove.push(file);
+                    } else {
+                        remove_files = false;
+                    }
+                } else {
+                    remove_files = false;
+                }
+            }
+            if remove_files {
+                for file in files_to_remove {
+                    fs::remove_file(file.path()).ok();
+                }
+            }
+        }
+        fs::remove_dir(library_path).ok();
     }
 
     Ok(())

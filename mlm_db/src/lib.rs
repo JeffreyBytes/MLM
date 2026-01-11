@@ -38,6 +38,7 @@ pub static MODELS: Lazy<Models> = Lazy::new(|| {
     models.define::<v17::DuplicateTorrent>().unwrap();
     models.define::<v17::ErroredTorrent>().unwrap();
     models.define::<v17::Event>().unwrap();
+    models.define::<v17::LibraryItem>().unwrap();
 
     models.define::<v16::Torrent>().unwrap();
     models.define::<v16::SelectedTorrent>().unwrap();
@@ -141,6 +142,8 @@ pub type ErroredTorrentId = v11::ErroredTorrentId;
 pub type Event = v17::Event;
 pub type EventKey = v17::EventKey;
 pub type EventType = v17::EventType;
+pub type LibraryItem = v17::LibraryItem;
+pub type LibraryItemKey = v17::LibraryItemKey;
 pub type List = v05::List;
 pub type ListKey = v05::ListKey;
 pub type ListItem = v05::ListItem;
@@ -204,6 +207,7 @@ pub fn migrate(db: &Database<'_>) -> Result<()> {
     rw.migrate::<ErroredTorrent>()?;
     // recover_migrate::<v03::Event, v04::Event>(&rw)?;
     rw.migrate::<Event>()?;
+    rw.migrate::<LibraryItem>()?;
     rw.migrate::<List>()?;
     rw.migrate::<ListItem>()?;
     rw.commit()?;

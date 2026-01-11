@@ -1,5 +1,6 @@
 use std::cell::Ref;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -10,7 +11,7 @@ use axum::{
     response::{Html, Redirect},
 };
 use axum_extra::extract::Form;
-use mlm_db::{Language, Torrent, TorrentKey};
+use mlm_db::{Language, LibraryItem, LibraryItemKey, Torrent, TorrentKey};
 use serde::{Deserialize, Serialize};
 
 use crate::stats::Context;
@@ -34,20 +35,33 @@ pub async fn replaced_torrents_page(
     Query(paging): Query<PaginationParams>,
 ) -> std::result::Result<Response, AppError> {
     let config = context.config().await;
-    let torrents = context
-        .db
-        .r_transaction()?
-        .scan()
-        .secondary::<Torrent>(TorrentKey::created_at)?;
+    let r = context.db.r_transaction()?;
+    let torrents = r.scan().secondary::<Torrent>(TorrentKey::created_at)?;
+    let mut linked_paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let items = r.scan().secondary::<LibraryItem>(LibraryItemKey::torrent_id)?;
+    for item in items.all()? {
+        let Ok(item) = item else {
+            continue;
+        };
+        let Some(library_path) = &item.library_path else {
+            continue;
+        };
+        linked_paths
+            .entry(item.torrent_id.clone())
+            .or_insert_with(|| library_path.clone());
+    }
     let mut replaced_torrents = torrents
         .all()?
         .rev()
-        .filter(|t| {
-            let Ok(t) = t else {
-                return true;
-            };
+        .filter_map(|t| {
+            let mut t = t.ok()?;
+            if t.library_path.is_none()
+                && let Some(path) = linked_paths.get(&t.id)
+            {
+                t.library_path = Some(path.clone());
+            }
             if t.replaced_with.is_none() {
-                return false;
+                return None;
             }
             for (field, value) in filter.iter() {
                 let ok = match field {
@@ -68,12 +82,12 @@ pub async fn replaced_torrents_page(
                     TorrentsPageFilter::PageSize => true,
                 };
                 if !ok {
-                    return false;
+                    return None;
                 }
             }
-            true
+            Some(t)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
 
     let paging = match paging.default_page_size(uri, 500, replaced_torrents.len()) {
         Ok(paging) => paging,

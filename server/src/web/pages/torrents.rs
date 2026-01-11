@@ -1,5 +1,6 @@
 use std::cell::Ref;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::mem;
 use std::str::FromStr;
 
@@ -11,7 +12,7 @@ use axum::{
     response::{Html, Redirect},
 };
 use axum_extra::extract::Form;
-use mlm_db::{Language, LibraryMismatch, Torrent, TorrentKey};
+use mlm_db::{Language, LibraryItem, LibraryItemKey, LibraryMismatch, Torrent, TorrentKey};
 use serde::{Deserialize, Serialize};
 use sublime_fuzzy::FuzzySearch;
 
@@ -43,6 +44,19 @@ pub async fn torrents_page(
 
     let torrent_count = r.len().secondary::<Torrent>(TorrentKey::created_at)?;
     let torrents = r.scan().secondary::<Torrent>(TorrentKey::created_at)?;
+    let mut linked_paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let items = r.scan().secondary::<LibraryItem>(LibraryItemKey::torrent_id)?;
+    for item in items.all()? {
+        let Ok(item) = item else {
+            continue;
+        };
+        let Some(library_path) = &item.library_path else {
+            continue;
+        };
+        linked_paths
+            .entry(item.torrent_id.clone())
+            .or_insert_with(|| library_path.clone());
+    }
     let mut filter = filter;
     let query_pos = filter
         .iter()
@@ -71,9 +85,14 @@ pub async fn torrents_page(
     let torrents = torrents.all()?.rev();
 
     let torrents = torrents.filter_map(|t| {
-        let Ok(t) = t else {
+        let Ok(mut t) = t else {
             return Some(t.map(|t| (t, 0)));
         };
+        if t.library_path.is_none()
+            && let Some(path) = linked_paths.get(&t.id)
+        {
+            t.library_path = Some(path.clone());
+        }
         let mut torrent_score = 0;
         for (field, value) in filter.iter() {
             let ok = match field {

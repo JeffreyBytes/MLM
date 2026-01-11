@@ -34,6 +34,28 @@ pub struct Torrent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 7, version = 1)]
+#[native_db(export_keys = true)]
+pub struct LibraryItem {
+    #[primary_key]
+    pub id: String,
+    #[secondary_key]
+    pub torrent_id: String,
+    pub item_index: u32,
+    pub item_name: String,
+    pub item_title: String,
+    pub series_entry: Option<v09::SeriesEntry>,
+    pub library_path: Option<PathBuf>,
+    pub library_files: Vec<PathBuf>,
+    pub selected_audio_format: Option<String>,
+    pub selected_ebook_format: Option<String>,
+    #[secondary_key]
+    pub title_search: String,
+    pub abs_id: Option<String>,
+    pub created_at: v03::Timestamp,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[native_model(id = 3, version = 17, from = v16::SelectedTorrent)]
 #[native_db(export_keys = true)]
 pub struct SelectedTorrent {

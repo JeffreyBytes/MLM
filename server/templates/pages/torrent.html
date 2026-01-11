@@ -66,9 +66,13 @@
   <p>Uploader: {{ mam_torrent.owner_name }}</p>
 {% endif %}
 <p>Uploaded At: {{ self::time(torrent.meta.uploaded_at) }}</p>
-{% if let Some(library_path) = torrent.library_path %}
+{% if torrent.library_path.is_some() || !library_items.is_empty() %}
   <div class=row style="justify-content:flex-start">
-    Linked Path: {{ library_path.to_string_lossy() }}
+    {% if let Some(library_path) = torrent.library_path %}
+      Linked Path: {{ library_path.to_string_lossy() }}
+    {% else %}
+      Linked Items: {{ library_items.len() }}
+    {% endif %}
     <form method=post>
       <button name=action value=refresh-relink>refresh metadata and relink</button>
       <button name=action value=clean data-prompt="Are you sure you want to clean this torrent?">clean torrent</button>
@@ -92,6 +96,28 @@
   <ul>
   {% for file in torrent.library_files.iter().flatten() %}
     <li><a href="/torrents/{{torrent.id}}/{{file.to_string_lossy() | urlencode_strict}}" target=_blank>{{ file.to_string_lossy() }}</a></li>
+  {% endfor %}
+  </ul>
+</details>
+{% endif %}
+{% if !library_items.is_empty() %}
+<details>
+  <summary>Library Items</summary>
+  <ul>
+  {% for item in library_items.iter() %}
+    <li>
+      {{ item.item_title }}
+      {% if let Some(path) = item.library_path %}
+        - {{ path.to_string_lossy() }}
+      {% endif %}
+      {% if !item.library_files.is_empty() %}
+        <ul>
+        {% for file in item.library_files.iter().flatten() %}
+          <li>{{ file.to_string_lossy() }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
   {% endfor %}
   </ul>
 </details>

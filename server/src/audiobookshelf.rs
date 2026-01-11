@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use axum::http::HeaderMap;
-use mlm_db::{DatabaseExt as _, Flags, Torrent, TorrentMeta, impls::format_serie};
+use mlm_db::{impls::format_serie, DatabaseExt as _, Flags, LibraryItem, Torrent, TorrentMeta};
 use mlm_mam::search::MaMTorrent;
 use native_db::Database;
 use reqwest::{Url, header::AUTHORIZATION};
@@ -483,15 +483,19 @@ pub async fn match_torrents_to_abs(
     db: Arc<Database<'_>>,
 ) -> Result<()> {
     let abs = Abs::new(config)?;
-    let torrents = db.r_transaction()?.scan().primary::<Torrent>()?;
-    let torrents = torrents.all()?.filter(|t| {
-        t.as_ref()
-            .is_ok_and(|t| t.abs_id.is_none() && t.library_path.is_some())
+    let r = db.r_transaction()?;
+    let torrents_map = r
+        .scan()
+        .primary::<Torrent>()?
+        .all()?
+        .filter_map(|t| t.ok().map(|t| (t.id.clone(), t)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let torrents = torrents_map.values().filter(|t| {
+        t.abs_id.is_none() && t.library_path.is_some()
     });
 
     for torrent in torrents {
-        let mut torrent = torrent?;
-        let Some(book) = abs.get_book(&torrent).await? else {
+        let Some(book) = abs.get_book(torrent).await? else {
             trace!(
                 "Could not find ABS entry for torrent {} {}",
                 torrent.meta.mam_id, torrent.meta.title
@@ -504,7 +508,40 @@ pub async fn match_torrents_to_abs(
         );
         torrent.abs_id = Some(book.id);
         let (_guard, rw) = db.rw_async().await?;
+        let mut torrent = torrent.clone();
         rw.upsert(torrent)?;
+        rw.commit()?;
+    }
+
+    let items = r.scan().primary::<LibraryItem>()?;
+    let items = items.all()?.filter_map(|i| i.ok()).filter(|i| {
+        i.abs_id.is_none() && i.library_path.is_some()
+    });
+    for item in items {
+        let Some(torrent) = torrents_map.get(&item.torrent_id) else {
+            continue;
+        };
+        let Some(library_path) = &item.library_path else {
+            continue;
+        };
+        let Some(first_author) = torrent.meta.authors.first() else {
+            continue;
+        };
+        let Some(book) = abs.get_book_by_path(library_path, first_author).await? else {
+            trace!(
+                "Could not find ABS entry for torrent {} item {}",
+                torrent.meta.mam_id, item.item_index
+            );
+            continue;
+        };
+        debug!(
+            "Matched ABS entry with torrent {} item {}",
+            torrent.meta.mam_id, item.item_index
+        );
+        let mut item = item.clone();
+        item.abs_id = Some(book.id);
+        let (_guard, rw) = db.rw_async().await?;
+        rw.upsert(item)?;
         rw.commit()?;
     }
 
@@ -539,6 +576,14 @@ impl Abs {
         let Some(first_author) = torrent.meta.authors.first() else {
             return Ok(None);
         };
+        self.get_book_by_path(library_path, first_author).await
+    }
+
+    pub async fn get_book_by_path(
+        &self,
+        library_path: &PathBuf,
+        author: &str,
+    ) -> Result<Option<LibraryItemMinified>> {
         let resp: LibrariesResponse = self
             .client
             .get(format!("{}/api/libraries", self.base_url))
@@ -557,7 +602,7 @@ impl Abs {
             let mut url: Url = format!("{}/api/libraries/{}/search", self.base_url, library.id)
                 .parse()
                 .unwrap();
-            url.query_pairs_mut().append_pair("q", first_author);
+            url.query_pairs_mut().append_pair("q", author);
             let resp = self
                 .client
                 .get(url)
